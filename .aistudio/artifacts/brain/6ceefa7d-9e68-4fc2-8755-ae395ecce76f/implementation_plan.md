@@ -1,11 +1,11 @@
-# Plan - Google Sheets Dynamic Overwrite & Deletion Sync
+# Plan - Derived RPG State (Cross-Device Level & Streak Sync)
 
-Currently, deleting logs only removes them from local storage but leaves them intact in the Google Sheet. On the next sync or page reload, they get re-pulled. We will implement full deletion and sync-overwrite behavior.
+Currently, your RPG level, XP, and streaks are stored in your device’s local memory (`localStorage`), but they are never synced or uploaded. This is why your laptop resets to **Level 1 — 0 Days Streak** even though your actual logs are correctly pulled.
+
+We will change the RPG state from a fragile, device-dependent local variable into a **derived, computed state**.
 
 ### What we will do:
-1. **Google Sheets Value Clear and Overwrite (`src/services/sheetsService.ts`)**:
-   - Add a new API method `overwriteLedgerRows()`.
-   - This method clears the Google Sheet range `Sheet1!A2:G` via the Sheets `:clear` endpoint and writes the exact list of non-deleted rows.
-2. **Deletions and Update Hooks (`src/context/AppContext.tsx`)**:
-   - When a row is deleted (Expense or Work), remove it locally and immediately trigger a background update to rewrite the Google Sheet values.
-   - Refactor `triggerManualSync()` into a complete two-way consolidation sync to reflect deletes on both devices.
+1. **Dynamic Derived State Engine (`src/context/AppContext.tsx`)**:
+   - Refactor the `rpg` variable to use `React.useMemo()`, deriving your Level, XP, Consecutive Daily Streaks, and Milestones dynamically from your actual list of `workSessions` and `expenses`.
+2. **Immediate Mirroring**:
+   - Because your logs are synchronized perfectly through the Google Sheet, **your Level, XP, Streaks, and Badges will automatically mirror across all your devices** (mobile and laptop) instantly without any configuration or secondary databases.

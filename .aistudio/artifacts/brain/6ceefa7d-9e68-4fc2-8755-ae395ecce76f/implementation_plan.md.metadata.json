@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for full bidirectional deletion & overwrite sync to align Google Sheets and the app.",
-  "updatedAt": "2026-09-29T22:56:32.388432661Z",
+  "summary": "Implementation plan to calculate user RPG Level, XP, and Streak dynamically on the fly based on synced Google Sheets data to solve cross-device state synchronization issues.",
+  "updatedAt": "2026-09-29T23:25:19.048304306Z",
   "requestFeedback": true,
   "userFacing": true
 }

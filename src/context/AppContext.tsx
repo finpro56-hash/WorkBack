@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useMemo } from 'react';
 import { User } from 'firebase/auth';
-import { googleSignIn, logout as firebaseLogout, initAuth, getAccessToken } from '../services/authService';
+import { googleSignIn, logout as firebaseLogout, initAuth } from '../services/authService';
 import { findLedgerFile, createLedgerFile, overwriteLedgerRows, LedgerRow, fetchLedgerRows } from '../services/sheetsService';
 
 export interface Expense {
@@ -103,11 +103,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return saved ? parseInt(saved, 10) : 500;
   });
 
-  const [rpg, setRpg] = useState<RPGState>(() => {
-    const saved = localStorage.getItem('wb_rpg');
-    return saved ? JSON.parse(saved) : { xp: 0, level: 1, streakCount: 0, lastWorkDate: null, unlockedBadges: [] };
-  });
-
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
     return localStorage.getItem('wb_spreadsheet_id') || null;
   });
@@ -150,10 +145,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     localStorage.setItem('wb_budget_limit', dailyBudgetLimit.toString());
   }, [dailyBudgetLimit]);
-
-  useEffect(() => {
-    localStorage.setItem('wb_rpg', JSON.stringify(rpg));
-  }, [rpg]);
 
   useEffect(() => {
     if (spreadsheetId) {
@@ -239,6 +230,80 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [expenses, workSessions, user, accessToken, spreadsheetId, isOnline]);
 
+  // RPG Calculations derived dynamically from the complete set of logs!
+  // This guarantees perfect multi-device mirroring of Levels, XP, Streaks, and Badges.
+  const rpg = useMemo<RPGState>(() => {
+    // 1. Calculate XP from focus/study work hours
+    const totalXp = workSessions.reduce((sum, w) => sum + Math.round(w.hours * 100), 0);
+
+    // 2. Calculate Level using level scaling (level L needs L * 200 XP to level up)
+    let remainingXp = totalXp;
+    let level = 1;
+    let nextLvlThreshold = level * 200;
+    while (remainingXp >= nextLvlThreshold) {
+      remainingXp -= nextLvlThreshold;
+      level += 1;
+      nextLvlThreshold = level * 200;
+    }
+
+    // 3. Calculate consecutive daily Streaks
+    const uniqueWorkDates = Array.from(new Set(workSessions.map((w) => w.date))).sort((a, b) => b.localeCompare(a));
+    const lastWorkDate = uniqueWorkDates[0] || null;
+    let streakCount = 0;
+
+    if (lastWorkDate) {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+      if (lastWorkDate === todayStr || lastWorkDate === yesterdayStr) {
+        streakCount = 1;
+        const checkDate = new Date(lastWorkDate);
+        while (true) {
+          checkDate.setDate(checkDate.getDate() - 1);
+          const checkDateStr = checkDate.toISOString().split('T')[0];
+          if (uniqueWorkDates.includes(checkDateStr)) {
+            streakCount += 1;
+          } else {
+            break;
+          }
+        }
+      }
+    }
+
+    // 4. Determine Badge Achievements dynamically
+    const unlockedBadges: string[] = [];
+    if (expenses.length > 0) unlockedBadges.push('FIRST_EXPENSE');
+    if (workSessions.length > 0) unlockedBadges.push('FIRST_WORK');
+    if (streakCount >= 3) unlockedBadges.push('STREAK_3');
+    if (level >= 5) unlockedBadges.push('LEVEL_5');
+
+    const totalHoursWorked = workSessions.reduce((sum, w) => sum + w.hours, 0);
+    const totalExpenseDebt = expenses.reduce((sum, e) => sum + (e.amount / ratio.baseAmount) * ratio.requiredHours, 0);
+    if (totalHoursWorked >= totalExpenseDebt && totalExpenseDebt > 0) {
+      unlockedBadges.push('DEBT_FREE_HERO');
+    }
+
+    // Zen Budgeter - At least 5 expenses logged, with no daily budget overruns
+    const dailyExpensesMap: { [date: string]: number } = {};
+    expenses.forEach((e) => {
+      dailyExpensesMap[e.date] = (dailyExpensesMap[e.date] || 0) + e.amount;
+    });
+    const hasOverruns = Object.values(dailyExpensesMap).some((amount) => amount > dailyBudgetLimit);
+    if (expenses.length >= 5 && !hasOverruns) {
+      unlockedBadges.push('BUDGET_SAVIOR');
+    }
+
+    return {
+      xp: remainingXp,
+      level,
+      streakCount,
+      lastWorkDate,
+      unlockedBadges,
+    };
+  }, [expenses, workSessions, ratio, dailyBudgetLimit]);
+
   // Log Google Auth Login
   const login = async () => {
     try {
@@ -287,11 +352,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     setExpenses((prev) => [newExpense, ...prev]);
     addToast(`Expense logged! Debt Hours increased by ${((amount / ratio.baseAmount) * ratio.requiredHours).toFixed(1)} hrs`, 'success');
-
-    // Gamification milestone - First Expense Badge
-    if (!rpg.unlockedBadges.includes('FIRST_EXPENSE')) {
-      unlockBadge('FIRST_EXPENSE');
-    }
   };
 
   const addWorkSession = (hours: number, task: string, description: string, date: string) => {
@@ -305,70 +365,35 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       synced: false,
     };
 
-    // Experience calculation
+    // Calculate level-up toasts in advance
     const xpGained = Math.round(hours * 100);
-    const newXp = rpg.xp + xpGained;
-    
-    // Level scaling: Level L needs L * 200 XP.
-    let currentLvl = rpg.level || 1;
-    let nextLvlThreshold = currentLvl * 200;
-    let finalLvl = currentLvl;
-    let tempXp = newXp;
+    const currentTotalXp = workSessions.reduce((sum, w) => sum + Math.round(w.hours * 100), 0);
+    const newTotalXp = currentTotalXp + xpGained;
 
+    let tempXp = currentTotalXp;
+    let currentLvl = 1;
+    let nextLvlThreshold = currentLvl * 200;
     while (tempXp >= nextLvlThreshold) {
       tempXp -= nextLvlThreshold;
-      finalLvl += 1;
-      nextLvlThreshold = finalLvl * 200;
+      currentLvl += 1;
+      nextLvlThreshold = currentLvl * 200;
     }
 
-    // Check Streak logic
-    let currentStreak = rpg.streakCount;
-    const today = new Date().toISOString().split('T')[0];
-    
-    if (rpg.lastWorkDate) {
-      const lastDate = new Date(rpg.lastWorkDate);
-      const todayDate = new Date(today);
-      const diffTime = Math.abs(todayDate.getTime() - lastDate.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
-      if (diffDays === 1) {
-        currentStreak += 1;
-        addToast(`Day ${currentStreak} of Work Streak! (XP Multiplier Active)`, 'rpg');
-      } else if (diffDays > 1) {
-        currentStreak = 1;
-      }
-    } else {
-      currentStreak = 1;
+    let tempNewXp = newTotalXp;
+    let newLvl = 1;
+    let nextNewLvlThreshold = newLvl * 200;
+    while (tempNewXp >= nextNewLvlThreshold) {
+      tempNewXp -= nextNewLvlThreshold;
+      newLvl += 1;
+      nextNewLvlThreshold = newLvl * 200;
     }
-
-    const updatedBadges = [...rpg.unlockedBadges];
-    if (!updatedBadges.includes('FIRST_WORK')) {
-      updatedBadges.push('FIRST_WORK');
-      addToast('Badge Unlocked: Action Pioneer!', 'rpg');
-    }
-    if (currentStreak >= 3 && !updatedBadges.includes('STREAK_3')) {
-      updatedBadges.push('STREAK_3');
-      addToast('Badge Unlocked: Consistency Knight!', 'rpg');
-    }
-    if (finalLvl >= 5 && !updatedBadges.includes('LEVEL_5')) {
-      updatedBadges.push('LEVEL_5');
-      addToast('Badge Unlocked: Discipline Adept!', 'rpg');
-    }
-
-    setRpg({
-      xp: tempXp,
-      level: finalLvl,
-      streakCount: currentStreak,
-      lastWorkDate: today,
-      unlockedBadges: updatedBadges,
-    });
 
     setWorkSessions((prev) => [newSession, ...prev]);
     addToast(`Completed focus task! Earned +${xpGained} XP.`, 'success');
     
-    if (finalLvl > currentLvl) {
-      addToast(`LEVEL UP! You reached Level ${finalLvl}!`, 'rpg');
-      triggerLocalNotification('LEVEL UP!', `Congratulations! You reached RPG Level ${finalLvl} in self-discipline!`);
+    if (newLvl > currentLvl) {
+      addToast(`LEVEL UP! You reached Level ${newLvl}!`, 'rpg');
+      triggerLocalNotification('LEVEL UP!', `Congratulations! You reached RPG Level ${newLvl} in self-discipline!`);
     }
   };
 
@@ -378,7 +403,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     setExpenses((prev) => {
       const updated = prev.filter((e) => e.id !== id);
-      // Automatically trigger a sheets overwrite inside triggerManualSyncWithState
       setTimeout(() => {
         triggerManualSyncWithState(updated, workSessions);
       }, 50);
@@ -409,16 +433,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const updateDailyBudgetLimit = (limit: number) => {
     setDailyBudgetLimit(limit);
     addToast(`Daily budget limit configured to ${limit} RS`, 'success');
-  };
-
-  const unlockBadge = (badgeId: string) => {
-    if (!rpg.unlockedBadges.includes(badgeId)) {
-      setRpg((prev) => ({
-        ...prev,
-        unlockedBadges: [...prev.unlockedBadges, badgeId],
-      }));
-      addToast(`New Badge Earned: ${BADGES_LIST.find((b) => b.id === badgeId)?.title || badgeId}!`, 'rpg');
-    }
   };
 
   // Downward sync: Pull & Merge logs from Google Sheet
@@ -521,7 +535,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         });
       });
 
-      // Sort chronologically ascending so newest are inserted nicely in Google Sheets
       const sortedRows = rowsToPut.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
       const success = await overwriteLedgerRows(accessToken, spreadsheetId, sortedRows);
@@ -677,7 +690,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (window.confirm('Reset all local expenses & work session logs? (This does not touch your Google Sheet)')) {
       setExpenses([]);
       setWorkSessions([]);
-      setRpg({ xp: 0, level: 1, streakCount: 0, lastWorkDate: null, unlockedBadges: [] });
       localStorage.removeItem('wb_spreadsheet_id');
       setSpreadsheetId(null);
       addToast('Local workspace data reset.', 'info');
