@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan to add PWA App Shortcuts (Home Screen contextual widgets) for lightning-fast logging of Expenses and Work.",
-  "updatedAt": "2026-09-29T22:39:28.330450616Z",
+  "summary": "Implementation plan for bidirectional two-way syncing to support multi-device real-time updates (mobile & laptop) across a single Google Sheet ledger.",
+  "updatedAt": "2026-09-29T22:48:34.665776865Z",
   "requestFeedback": true,
   "userFacing": true
 }

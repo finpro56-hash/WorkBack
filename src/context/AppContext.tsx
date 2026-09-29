@@ -209,6 +209,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             addToast('Created "WorkBack Ledger" Spreadsheet in Google Drive!', 'success');
           } else {
             addToast('Connected to existing "WorkBack Ledger" in Google Drive.', 'success');
+            // Pull existing logs to sync on first connection
+            await pullAndMergeFromSheet(accessToken, sheetId);
           }
           setSpreadsheetId(sheetId);
         } catch (err) {
@@ -221,6 +223,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       initializeSheets();
     }
   }, [user, accessToken, isOnline, spreadsheetId]);
+
+  // Startup auto pull sync from Google Sheets once spreadsheet details are loaded
+  useEffect(() => {
+    if (user && accessToken && spreadsheetId && isOnline) {
+      pullAndMergeFromSheet(accessToken, spreadsheetId);
+    }
+  }, [user, accessToken, spreadsheetId]);
 
   // Trigger auto background sync of unsynced items
   useEffect(() => {
@@ -301,7 +310,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const newXp = rpg.xp + xpGained;
     
     // Level scaling: Level L needs L * 200 XP.
-    // Let's compute if level increased
     let currentLvl = rpg.level || 1;
     let nextLvlThreshold = currentLvl * 200;
     let finalLvl = currentLvl;
@@ -398,7 +406,71 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  // Synchronize Google Sheet
+  // Downward sync: Pull & Merge logs from Google Sheet
+  const pullAndMergeFromSheet = async (token: string, sheetId: string) => {
+    try {
+      const remoteRows = await fetchLedgerRows(token, sheetId);
+      if (!remoteRows) return;
+
+      const remoteExpenses: Expense[] = [];
+      const remoteSessions: WorkSession[] = [];
+
+      remoteRows.forEach((row) => {
+        let taskToEarn = '';
+        if (row.description.startsWith('Task required: ')) {
+          taskToEarn = row.description.replace('Task required: ', '');
+        } else {
+          taskToEarn = row.description;
+        }
+
+        if (row.type === 'EXPENSE') {
+          remoteExpenses.push({
+            id: row.id,
+            amount: row.amountOrHours,
+            category: row.categoryOrTask,
+            date: row.timestamp.split('T')[0],
+            taskToEarn: taskToEarn,
+            timestamp: row.timestamp,
+            synced: true,
+          });
+        } else if (row.type === 'WORK') {
+          remoteSessions.push({
+            id: row.id,
+            hours: row.amountOrHours,
+            task: row.categoryOrTask,
+            description: row.description,
+            date: row.timestamp.split('T')[0],
+            timestamp: row.timestamp,
+            synced: true,
+          });
+        }
+      });
+
+      setExpenses((localPrev) => {
+        const merged = [...localPrev];
+        remoteExpenses.forEach((remote) => {
+          if (!merged.some((local) => local.id === remote.id)) {
+            merged.push(remote);
+          }
+        });
+        return merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      });
+
+      setWorkSessions((localPrev) => {
+        const merged = [...localPrev];
+        remoteSessions.forEach((remote) => {
+          if (!merged.some((local) => local.id === remote.id)) {
+            merged.push(remote);
+          }
+        });
+        return merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      });
+    } catch (err) {
+      console.error('pullAndMergeFromSheet error:', err);
+    }
+  };
+
+  // Bidirectional Synchronization of Google Sheet (Upward push & Downward pull)
   const triggerManualSync = async () => {
     if (!user || !accessToken || !spreadsheetId) {
       addToast('Sign in to your Google Account to synchronize data.', 'warning');
@@ -412,50 +484,130 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     setSyncing(true);
     try {
+      // 1. Fetch remote rows from sheet
+      const remoteRows = await fetchLedgerRows(accessToken, spreadsheetId);
+      
+      // 2. Identify remote expenses and sessions
+      const remoteExpenses: Expense[] = [];
+      const remoteSessions: WorkSession[] = [];
+
+      remoteRows.forEach((row) => {
+        let taskToEarn = '';
+        if (row.description.startsWith('Task required: ')) {
+          taskToEarn = row.description.replace('Task required: ', '');
+        } else {
+          taskToEarn = row.description;
+        }
+
+        if (row.type === 'EXPENSE') {
+          remoteExpenses.push({
+            id: row.id,
+            amount: row.amountOrHours,
+            category: row.categoryOrTask,
+            date: row.timestamp.split('T')[0],
+            taskToEarn: taskToEarn,
+            timestamp: row.timestamp,
+            synced: true,
+          });
+        } else if (row.type === 'WORK') {
+          remoteSessions.push({
+            id: row.id,
+            hours: row.amountOrHours,
+            task: row.categoryOrTask,
+            description: row.description,
+            date: row.timestamp.split('T')[0],
+            timestamp: row.timestamp,
+            synced: true,
+          });
+        }
+      });
+
+      // 3. Find local unsynced logs
       const unsyncedExpenses = expenses.filter((e) => !e.synced);
       const unsyncedSessions = workSessions.filter((w) => !w.synced);
 
       const rowsToAppend: LedgerRow[] = [];
 
       unsyncedExpenses.forEach((e) => {
-        rowsToAppend.push({
-          timestamp: e.timestamp,
-          type: 'EXPENSE',
-          id: e.id,
-          amountOrHours: e.amount,
-          categoryOrTask: e.category,
-          description: `Task required: ${e.taskToEarn}`,
-          ratio: `${ratio.requiredHours}h / ${ratio.baseAmount}RS`,
-        });
+        // Only append if not already present on remote (safety fallback)
+        if (!remoteRows.some(row => row.id === e.id)) {
+          rowsToAppend.push({
+            timestamp: e.timestamp,
+            type: 'EXPENSE',
+            id: e.id,
+            amountOrHours: e.amount,
+            categoryOrTask: e.category,
+            description: `Task required: ${e.taskToEarn}`,
+            ratio: `${ratio.requiredHours}h / ${ratio.baseAmount}RS`,
+          });
+        }
       });
 
       unsyncedSessions.forEach((w) => {
-        rowsToAppend.push({
-          timestamp: w.timestamp,
-          type: 'WORK',
-          id: w.id,
-          amountOrHours: w.hours,
-          categoryOrTask: w.task,
-          description: w.description,
-          ratio: `${ratio.requiredHours}h / ${ratio.baseAmount}RS`,
-        });
+        if (!remoteRows.some(row => row.id === w.id)) {
+          rowsToAppend.push({
+            timestamp: w.timestamp,
+            type: 'WORK',
+            id: w.id,
+            amountOrHours: w.hours,
+            categoryOrTask: w.task,
+            description: w.description,
+            ratio: `${ratio.requiredHours}h / ${ratio.baseAmount}RS`,
+          });
+        }
       });
 
+      // 4. Append local changes to remote sheet if any exist
+      let appendSuccess = true;
       if (rowsToAppend.length > 0) {
-        const success = await appendLedgerRows(accessToken, spreadsheetId, rowsToAppend);
-        if (success) {
-          setExpenses((prev) => prev.map((e) => ({ ...e, synced: true })));
-          setWorkSessions((prev) => prev.map((w) => ({ ...w, synced: true })));
-          addToast(`Synced ${rowsToAppend.length} logs to your Google Sheet!`, 'success');
+        appendSuccess = await appendLedgerRows(accessToken, spreadsheetId, rowsToAppend);
+      }
+
+      if (appendSuccess) {
+        // 5. Build fully merged states for both local and remote data
+        setExpenses((localPrev) => {
+          // Remove elements that are now successfully synced (they will be re-added as remote synced copies below)
+          const merged = localPrev.filter(e => !e.synced);
+          
+          // Re-mark them as synced
+          merged.forEach(e => e.synced = true);
+
+          // Add all remote expenses
+          remoteExpenses.forEach((remote) => {
+            if (!merged.some((m) => m.id === remote.id)) {
+              merged.push(remote);
+            }
+          });
+          
+          // Re-sort descending
+          return merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        });
+
+        setWorkSessions((localPrev) => {
+          const merged = localPrev.filter(w => !w.synced);
+          merged.forEach(w => w.synced = true);
+          
+          // Add all remote sessions
+          remoteSessions.forEach((remote) => {
+            if (!merged.some((m) => m.id === remote.id)) {
+              merged.push(remote);
+            }
+          });
+          
+          return merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        });
+
+        if (rowsToAppend.length > 0) {
+          addToast(`Two-way sync complete: Sent ${rowsToAppend.length} local logs, fetched up-to-date ledger!`, 'success');
         } else {
-          throw new Error('Sync failed in sheetsService append action.');
+          addToast('Your ledger is fully up-to-date with your other devices!', 'success');
         }
       } else {
-        addToast('Everything is up-to-date!', 'info');
+        throw new Error('Push append failed.');
       }
     } catch (err) {
       console.error(err);
-      addToast('Google Sheets sync encountered a temporary issue.', 'warning');
+      addToast('Two-way sync encountered a connection issue.', 'warning');
     } finally {
       setSyncing(false);
     }
