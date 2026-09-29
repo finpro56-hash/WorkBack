@@ -7,6 +7,6 @@
   </defs>
   <rect width="512" height="512" rx="128" fill="#f1f5f9"/>
   <circle cx="256" cy="256" r="180" fill="url(#grad)" filter="drop-shadow(4px 4px 10px rgba(0,0,0,0.15))" />
-  <path d="M256 120 V256 L340 300" stroke="#ffffff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <circle cx="256" cy="256" r="18" fill="#ffffff" />
+  <!-- Elegant thick white 'W' in center -->
+  <path d="M179 195 L215 317 L256 235 L297 317 L333 195" stroke="#ffffff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>
