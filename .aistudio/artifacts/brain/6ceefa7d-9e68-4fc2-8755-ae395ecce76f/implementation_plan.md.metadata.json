@@ -1,6 +1,6 @@
 {
-  "summary": "Plan to persist Google OAuth session credentials and Firebase user profiles in localStorage, avoiding forced sign-outs on browser refresh and keeping the user logged in until explicit logout.",
-  "updatedAt": "2026-09-29T22:32:03.716438271Z",
+  "summary": "Implementation plan to add PWA App Shortcuts (Home Screen contextual widgets) for lightning-fast logging of Expenses and Work.",
+  "updatedAt": "2026-09-29T22:39:28.330450616Z",
   "requestFeedback": true,
   "userFacing": true
 }

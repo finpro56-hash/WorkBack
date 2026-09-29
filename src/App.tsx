@@ -101,6 +101,17 @@ export default function App() {
     };
   }, []);
 
+  // Check URL query parameters for PWA Home Screen Shortcuts
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get('tab');
+    if (tabParam === 'expense' || tabParam === 'work' || tabParam === 'rpg' || tabParam === 'settings') {
+      setActiveTab(tabParam as any);
+      // Clean up the URL query parameters to keep the path clean
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
   const handleInstallClick = async () => {
     if (deferredPrompt) {
       deferredPrompt.prompt();

@@ -42,6 +42,22 @@ export default defineConfig(() => {
               purpose: 'maskable',
             },
           ],
+          shortcuts: [
+            {
+              name: 'Log Expense Debt',
+              short_name: 'Log Expense',
+              description: 'Instantly add an expense and task debt',
+              url: '/?tab=expense',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192' }]
+            },
+            {
+              name: 'Log Work Hours',
+              short_name: 'Log Work',
+              description: 'Instantly log study or focus work done',
+              url: '/?tab=work',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192' }]
+            }
+          ],
         },
         devOptions: {
           enabled: true,
