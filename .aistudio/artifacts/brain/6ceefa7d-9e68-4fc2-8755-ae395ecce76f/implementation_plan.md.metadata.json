@@ -1,6 +1,6 @@
 {
-  "summary": "Vercel hosting deployment plan for WorkBack, configuring vercel.json routing for React SPA/PWA standards, and detailed instructions for Firebase/Google Cloud Console domain whitelistings.",
-  "updatedAt": "2026-09-29T21:55:25.801072507Z",
+  "summary": "Plan to persist Google OAuth session credentials and Firebase user profiles in localStorage, avoiding forced sign-outs on browser refresh and keeping the user logged in until explicit logout.",
+  "updatedAt": "2026-09-29T22:32:03.716438271Z",
   "requestFeedback": true,
   "userFacing": true
 }

@@ -11,33 +11,36 @@ export const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 
-// In-memory access token storage (compliant with security guidelines)
-let cachedAccessToken: string | null = null;
+// In-memory access token storage initialized from localStorage for seamless persistence
+let cachedAccessToken: string | null = localStorage.getItem('wb_access_token');
 let isSigningIn = false;
 
 /**
  * Initialize Auth state listener.
- * In a real-world Firebase setup, auth state changes may not include the initial
- * accessToken unless acquired via signInWithPopup, so we require a sign-in or cache.
+ * Restores Google Workspace access token from localStorage for seamless user session retention.
  */
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
-    const token = cachedAccessToken;
-    if (user && token) {
-      if (onAuthSuccess) onAuthSuccess(user, token);
+    if (!cachedAccessToken) {
+      cachedAccessToken = localStorage.getItem('wb_access_token');
+    }
+
+    if (user && cachedAccessToken) {
+      if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
     } else {
-      // If user is logged in but token is missing, we require a re-sign-in to acquire the token in memory
+      // Clear session on auth failure or explicit logout
       cachedAccessToken = null;
+      localStorage.removeItem('wb_access_token');
       if (onAuthFailure) onAuthFailure();
     }
   });
 };
 
 /**
- * Trigger Google Sign-In via popup and cache token in memory
+ * Trigger Google Sign-In via popup and cache token in localStorage to retain session across reloads
  */
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   try {
@@ -49,6 +52,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
+    localStorage.setItem('wb_access_token', credential.accessToken);
     return { user: result.user, accessToken: credential.accessToken };
   } catch (error: any) {
     console.error('Google Sign-In Error:', error);
@@ -59,23 +63,32 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 /**
- * Retrieve cached access token in memory
+ * Retrieve cached access token
  */
 export const getAccessToken = async (): Promise<string | null> => {
+  if (!cachedAccessToken) {
+    cachedAccessToken = localStorage.getItem('wb_access_token');
+  }
   return cachedAccessToken;
 };
 
 /**
- * Manually inject a cached token (useful on hot reload/initial callback)
+ * Manually inject a cached token
  */
 export const setCachedAccessToken = (token: string | null) => {
   cachedAccessToken = token;
+  if (token) {
+    localStorage.setItem('wb_access_token', token);
+  } else {
+    localStorage.removeItem('wb_access_token');
+  }
 };
 
 /**
- * Sign out and clear cached token
+ * Sign out, clear cached token, and clear persistent session
  */
 export const logout = async () => {
   await auth.signOut();
   cachedAccessToken = null;
+  localStorage.removeItem('wb_access_token');
 };
