@@ -130,6 +130,61 @@ export const appendLedgerRows = async (token: string, spreadsheetId: string, row
 };
 
 /**
+ * Completely clears and overwrites the spreadsheet starting from A2 (preserving headers in row 1).
+ * Perfect for deletion syncing and updates.
+ */
+export const overwriteLedgerRows = async (token: string, spreadsheetId: string, rows: LedgerRow[]): Promise<boolean> => {
+  try {
+    // 1. Clear existing range A2:G first
+    const clearResponse = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Sheet1!A2:G:clear`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!clearResponse.ok) {
+      console.warn('Google Sheets values clear returned non-ok status:', clearResponse.statusText);
+    }
+
+    if (rows.length === 0) {
+      return true; // Sheet successfully cleared of all logs
+    }
+
+    // 2. Overwrite with current local items
+    const values = rows.map((row) => [
+      row.timestamp,
+      row.type,
+      row.id,
+      row.amountOrHours,
+      row.categoryOrTask,
+      row.description,
+      row.ratio,
+    ]);
+
+    const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/Sheet1!A2:G?valueInputOption=USER_ENTERED`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        values,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to put values: ${response.statusText}`);
+    }
+
+    return true;
+  } catch (error) {
+    console.error('overwriteLedgerRows error:', error);
+    return false;
+  }
+};
+
+/**
  * Downloads all rows from the Google Sheet (optional, for recovery of data)
  */
 export const fetchLedgerRows = async (token: string, spreadsheetId: string): Promise<LedgerRow[]> => {

@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for bidirectional two-way syncing to support multi-device real-time updates (mobile & laptop) across a single Google Sheet ledger.",
-  "updatedAt": "2026-09-29T22:48:34.665776865Z",
+  "summary": "Implementation plan for full bidirectional deletion & overwrite sync to align Google Sheets and the app.",
+  "updatedAt": "2026-09-29T22:56:32.388432661Z",
   "requestFeedback": true,
   "userFacing": true
 }
