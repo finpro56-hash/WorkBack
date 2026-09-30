@@ -39,11 +39,15 @@ export default function App() {
     spreadsheetId,
     isOnline,
     syncing,
+    lastSyncTime,
+    isAuthExpired,
     rpg,
     toasts,
     removeToast,
     login,
     logout,
+    reconnectGoogle,
+    manuallySetSpreadsheetId,
     addExpense,
     addWorkSession,
     deleteExpense,
@@ -58,6 +62,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'expense' | 'work' | 'rpg' | 'settings'>('home');
 
   // Input states
+  const [manualSheetInput, setManualSheetInput] = useState('');
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseCategory, setExpenseCategory] = useState('Leisure');
   const [expenseTask, setExpenseTask] = useState('');
@@ -342,6 +347,17 @@ export default function App() {
         <div className="flex items-center gap-2">
           {user ? (
             <div className="flex items-center gap-2">
+              {isAuthExpired && (
+                <button
+                  onClick={reconnectGoogle}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-[11px] shadow-sm animate-pulse transition"
+                  title="Google Sheets session expired. Click to re-connect."
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Reconnect
+                </button>
+              )}
+
               <button
                 onClick={triggerManualSync}
                 disabled={syncing || !isOnline}
@@ -426,6 +442,24 @@ export default function App() {
                     style={{ width: `${xpPercent}%` }}
                   />
                 </div>
+              </div>
+
+              {/* Cloud Sync Status & Quick Action */}
+              <div className="pt-2 border-t border-slate-200/50 flex items-center justify-between text-[11px] text-slate-500 font-medium">
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${syncing ? 'bg-indigo-500 animate-ping' : isAuthExpired ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                  <span className="truncate max-w-[170px]">
+                    {isAuthExpired ? 'Auth expired' : lastSyncTime ? `Synced: ${lastSyncTime}` : 'Cloud Connected'}
+                  </span>
+                </div>
+                <button
+                  onClick={isAuthExpired ? reconnectGoogle : triggerManualSync}
+                  disabled={syncing || !isOnline}
+                  className="flex items-center gap-1 font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50/90 hover:bg-indigo-100/80 px-2.5 py-1 rounded-xl transition shadow-xs text-xs"
+                >
+                  <RefreshCw className={`w-3 h-3 ${syncing ? 'animate-spin' : ''}`} />
+                  <span>{isAuthExpired ? 'Reconnect' : 'Sync Now'}</span>
+                </button>
               </div>
             </div>
 
@@ -1018,6 +1052,37 @@ export default function App() {
                     Connect your Google Account at the top of the screen to enable real-time Drive backing.
                   </p>
                 )}
+
+                {/* Direct Sheet Linker Input */}
+                <div className="mt-3 pt-3 border-t border-slate-200/60 flex flex-col gap-2">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                    Link Specific Google Sheet (ID or URL)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Paste Google Sheet URL or ID..."
+                      value={manualSheetInput}
+                      onChange={(e) => setManualSheetInput(e.target.value)}
+                      className="flex-1 px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-mono text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500 shadow-inner"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (manualSheetInput.trim()) {
+                          manuallySetSpreadsheetId(manualSheetInput.trim());
+                          setManualSheetInput('');
+                        }
+                      }}
+                      className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-sm transition shrink-0"
+                    >
+                      Connect
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-normal">
+                    Tip: If you opened WorkBack on a new laptop, copy the Google Sheet link or ID from your phone or Drive to sync both devices to the exact same ledger instantly!
+                  </p>
+                </div>
               </div>
             </div>
 

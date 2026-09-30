@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useMemo } from 'react';
 import { User } from 'firebase/auth';
-import { googleSignIn, logout as firebaseLogout, initAuth } from '../services/authService';
+import { googleSignIn, logout as firebaseLogout, initAuth, isTokenExpired } from '../services/authService';
 import { findLedgerFile, createLedgerFile, overwriteLedgerRows, LedgerRow, fetchLedgerRows } from '../services/sheetsService';
 
 export interface Expense {
@@ -63,12 +63,16 @@ interface AppContextType {
   spreadsheetId: string | null;
   isOnline: boolean;
   syncing: boolean;
+  lastSyncTime: string | null;
+  isAuthExpired: boolean;
   rpg: RPGState;
   toasts: Array<{ id: string; message: string; type: 'success' | 'warning' | 'info' | 'rpg' }>;
   addToast: (message: string, type?: 'success' | 'warning' | 'info' | 'rpg') => void;
   removeToast: (id: string) => void;
   login: () => Promise<void>;
   logout: () => Promise<void>;
+  reconnectGoogle: () => Promise<void>;
+  manuallySetSpreadsheetId: (input: string) => Promise<void>;
   addExpense: (amount: number, category: string, taskToEarn: string, date: string) => void;
   addWorkSession: (hours: number, task: string, description: string, date: string) => void;
   deleteExpense: (id: string) => void;
@@ -109,11 +113,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   // Auth State
   const [user, setUser] = useState<User | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(() => {
+    return localStorage.getItem('wb_access_token') || null;
+  });
+  const [isAuthExpired, setIsAuthExpired] = useState<boolean>(false);
 
   // Connection & Sync States
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [syncing, setSyncing] = useState<boolean>(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(() => {
+    return localStorage.getItem('wb_last_sync_time') || null;
+  });
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'warning' | 'info' | 'rpg' }>>([]);
 
   // Toast notifier helper
@@ -154,6 +164,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [spreadsheetId]);
 
+  useEffect(() => {
+    if (lastSyncTime) {
+      localStorage.setItem('wb_last_sync_time', lastSyncTime);
+    }
+  }, [lastSyncTime]);
+
   // Handle Online/Offline Status
   useEffect(() => {
     const handleOnline = () => {
@@ -175,17 +191,23 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   // Monitor auth status on load
   useEffect(() => {
-    initAuth(
+    const unsubscribe = initAuth(
       (currentUser, token) => {
         setUser(currentUser);
         setAccessToken(token);
-        addToast(`Welcome back, ${currentUser.displayName}!`, 'success');
+        if (isTokenExpired()) {
+          setIsAuthExpired(true);
+        } else {
+          setIsAuthExpired(false);
+        }
       },
       () => {
         setUser(null);
         setAccessToken(null);
+        setIsAuthExpired(false);
       }
     );
+    return () => unsubscribe();
   }, []);
 
   // Check and setup Google Sheets automatically when logged in
@@ -200,13 +222,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             addToast('Created "WorkBack Ledger" Spreadsheet in Google Drive!', 'success');
           } else {
             addToast('Connected to existing "WorkBack Ledger" in Google Drive.', 'success');
-            // Pull existing logs to sync on first connection
             await pullAndMergeFromSheet(accessToken, sheetId);
           }
           setSpreadsheetId(sheetId);
-        } catch (err) {
+        } catch (err: any) {
           console.error(err);
-          addToast('Failed to connect with Google Drive Ledger.', 'warning');
+          if (err.message === 'AUTH_EXPIRED') {
+            setIsAuthExpired(true);
+            addToast('Google Sheets connection expired. Please reconnect.', 'warning');
+          } else {
+            addToast('Failed to connect with Google Drive Ledger.', 'warning');
+          }
         } finally {
           setSyncing(false);
         }
@@ -230,11 +256,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [expenses, workSessions, user, accessToken, spreadsheetId, isOnline]);
 
-  // RPG Calculations derived dynamically from the complete set of logs!
-  // This guarantees perfect multi-device mirroring of Levels, XP, Streaks, and Badges.
+  // RPG Calculations derived dynamically from the complete set of logs
+  // This guarantees 100% multi-device mirroring of Levels, XP, Streaks, and Badges.
   const rpg = useMemo<RPGState>(() => {
     // 1. Calculate XP from focus/study work hours
-    const totalXp = workSessions.reduce((sum, w) => sum + Math.round(w.hours * 100), 0);
+    const totalXp = workSessions.reduce((sum, w) => sum + Math.round((w.hours || 0) * 100), 0);
 
     // 2. Calculate Level using level scaling (level L needs L * 200 XP to level up)
     let remainingXp = totalXp;
@@ -247,7 +273,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
 
     // 3. Calculate consecutive daily Streaks
-    const uniqueWorkDates = Array.from(new Set(workSessions.map((w) => w.date))).sort((a, b) => b.localeCompare(a));
+    const uniqueWorkDates = Array.from(new Set(workSessions.map((w) => w.date).filter(Boolean))).sort((a, b) => b.localeCompare(a));
     const lastWorkDate = uniqueWorkDates[0] || null;
     let streakCount = 0;
 
@@ -279,7 +305,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (streakCount >= 3) unlockedBadges.push('STREAK_3');
     if (level >= 5) unlockedBadges.push('LEVEL_5');
 
-    const totalHoursWorked = workSessions.reduce((sum, w) => sum + w.hours, 0);
+    const totalHoursWorked = workSessions.reduce((sum, w) => sum + (w.hours || 0), 0);
     const totalExpenseDebt = expenses.reduce((sum, e) => sum + (e.amount / ratio.baseAmount) * ratio.requiredHours, 0);
     if (totalHoursWorked >= totalExpenseDebt && totalExpenseDebt > 0) {
       unlockedBadges.push('DEBT_FREE_HERO');
@@ -311,11 +337,22 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       if (authResult) {
         setUser(authResult.user);
         setAccessToken(authResult.accessToken);
+        setIsAuthExpired(false);
         addToast(`Authenticated successfully as ${authResult.user.displayName}`, 'success');
       }
     } catch (err: any) {
       console.error(err);
       addToast('Authentication failed. Check your connection or retry popup.', 'warning');
+    }
+  };
+
+  const reconnectGoogle = async () => {
+    await login();
+    if (spreadsheetId) {
+      const token = localStorage.getItem('wb_access_token');
+      if (token) {
+        await pullAndMergeFromSheet(token, spreadsheetId);
+      }
     }
   };
 
@@ -325,7 +362,42 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setUser(null);
     setAccessToken(null);
     setSpreadsheetId(null);
+    setIsAuthExpired(false);
     addToast('Logged out of Google account.', 'info');
+  };
+
+  // Direct manual linking of a Google Sheet ID or URL (e.g. from mobile to laptop)
+  const manuallySetSpreadsheetId = async (input: string) => {
+    let cleanId = input.trim();
+    // Support pasting full Google Sheets URL: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit
+    const match = cleanId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (match && match[1]) {
+      cleanId = match[1];
+    }
+
+    if (!cleanId) {
+      addToast('Please enter a valid Google Sheet ID or URL', 'warning');
+      return;
+    }
+
+    setSpreadsheetId(cleanId);
+    localStorage.setItem('wb_spreadsheet_id', cleanId);
+    addToast(`Connected to Google Sheet ID: ${cleanId.substring(0, 8)}...`, 'success');
+
+    if (accessToken) {
+      await pullAndMergeFromSheet(accessToken, cleanId);
+    }
+  };
+
+  // Helper to extract safe YYYY-MM-DD date from any timestamp
+  const parseSafeDate = (timestampStr: string): string => {
+    if (!timestampStr) return new Date().toISOString().split('T')[0];
+    if (timestampStr.includes('T')) return timestampStr.split('T')[0];
+    const parsed = new Date(timestampStr);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.toISOString().split('T')[0];
+    }
+    return new Date().toISOString().split('T')[0];
   };
 
   // Local actions (Offline-first)
@@ -367,7 +439,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     // Calculate level-up toasts in advance
     const xpGained = Math.round(hours * 100);
-    const currentTotalXp = workSessions.reduce((sum, w) => sum + Math.round(w.hours * 100), 0);
+    const currentTotalXp = workSessions.reduce((sum, w) => sum + Math.round((w.hours || 0) * 100), 0);
     const newTotalXp = currentTotalXp + xpGained;
 
     let tempXp = currentTotalXp;
@@ -438,6 +510,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   // Downward sync: Pull & Merge logs from Google Sheet
   const pullAndMergeFromSheet = async (token: string, sheetId: string) => {
     try {
+      setSyncing(true);
       const remoteRows = await fetchLedgerRows(token, sheetId);
       if (!remoteRows) return;
 
@@ -452,12 +525,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           taskToEarn = row.description;
         }
 
+        const safeDate = parseSafeDate(row.timestamp);
+
         if (row.type === 'EXPENSE') {
           remoteExpenses.push({
             id: row.id,
             amount: row.amountOrHours,
             category: row.categoryOrTask,
-            date: row.timestamp.split('T')[0],
+            date: safeDate,
             taskToEarn: taskToEarn,
             timestamp: row.timestamp,
             synced: true,
@@ -468,13 +543,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             hours: row.amountOrHours,
             task: row.categoryOrTask,
             description: row.description,
-            date: row.timestamp.split('T')[0],
+            date: safeDate,
             timestamp: row.timestamp,
             synced: true,
           });
         }
       });
 
+      // Update local state with merged remote items
       setExpenses((localPrev) => {
         const merged = [...localPrev];
         remoteExpenses.forEach((remote) => {
@@ -494,8 +570,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         });
         return merged.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       });
-    } catch (err) {
+
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setLastSyncTime(now);
+      setIsAuthExpired(false);
+    } catch (err: any) {
       console.error('pullAndMergeFromSheet error:', err);
+      if (err.message === 'AUTH_EXPIRED') {
+        setIsAuthExpired(true);
+        addToast('Google authorization expired. Tap to reconnect.', 'warning');
+      }
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -541,13 +627,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       if (success) {
         setExpenses((prev) => prev.map((e) => ({ ...e, synced: true })));
         setWorkSessions((prev) => prev.map((w) => ({ ...w, synced: true })));
-        addToast('Google Sheet successfully updated and mirrored!', 'success');
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setLastSyncTime(now);
       } else {
         throw new Error('Google Sheets overwrite request failed.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      addToast('Encountered an error writing deletion to Google Sheets.', 'warning');
+      if (err.message === 'AUTH_EXPIRED') {
+        setIsAuthExpired(true);
+        addToast('Google session expired. Tap Reconnect to save changes.', 'warning');
+      } else {
+        addToast('Encountered an error writing to Google Sheets.', 'warning');
+      }
     } finally {
       setSyncing(false);
     }
@@ -555,9 +647,27 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   // Manual pull-and-push bidirectional sync
   const triggerManualSync = async () => {
-    if (!user || !accessToken || !spreadsheetId) {
+    if (!user) {
       addToast('Sign in to your Google Account to synchronize data.', 'warning');
       return;
+    }
+
+    if (!accessToken || isAuthExpired) {
+      addToast('Google session expired. Re-authorizing...', 'info');
+      await reconnectGoogle();
+      return;
+    }
+
+    let targetSheetId = spreadsheetId;
+    if (!targetSheetId) {
+      const sheetId = await findLedgerFile(accessToken);
+      if (sheetId) {
+        targetSheetId = sheetId;
+        setSpreadsheetId(sheetId);
+      } else {
+        addToast('No spreadsheet connected yet.', 'warning');
+        return;
+      }
     }
 
     if (!isOnline) {
@@ -568,7 +678,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setSyncing(true);
     try {
       // 1. Fetch remote rows
-      const remoteRows = await fetchLedgerRows(accessToken, spreadsheetId);
+      const remoteRows = await fetchLedgerRows(accessToken, targetSheetId);
       
       const remoteExpenses: Expense[] = [];
       const remoteSessions: WorkSession[] = [];
@@ -581,12 +691,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           taskToEarn = row.description;
         }
 
+        const safeDate = parseSafeDate(row.timestamp);
+
         if (row.type === 'EXPENSE') {
           remoteExpenses.push({
             id: row.id,
             amount: row.amountOrHours,
             category: row.categoryOrTask,
-            date: row.timestamp.split('T')[0],
+            date: safeDate,
             taskToEarn: taskToEarn,
             timestamp: row.timestamp,
             synced: true,
@@ -597,7 +709,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             hours: row.amountOrHours,
             task: row.categoryOrTask,
             description: row.description,
-            date: row.timestamp.split('T')[0],
+            date: safeDate,
             timestamp: row.timestamp,
             synced: true,
           });
@@ -653,18 +765,26 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
 
       const sortedRows = rowsToPut.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-      const success = await overwriteLedgerRows(accessToken, spreadsheetId, sortedRows);
+      const success = await overwriteLedgerRows(accessToken, targetSheetId, sortedRows);
 
       if (success) {
         setExpenses(finalExpenses.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
         setWorkSessions(finalSessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
-        addToast('Synced perfectly with Google Sheets!', 'success');
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setLastSyncTime(now);
+        setIsAuthExpired(false);
+        addToast(`Synced ${sortedRows.length} logs with Google Sheets!`, 'success');
       } else {
         throw new Error('Push sync overwrite failed.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      addToast('Two-way sync encountered an issue.', 'warning');
+      if (err.message === 'AUTH_EXPIRED') {
+        setIsAuthExpired(true);
+        addToast('Google session expired. Tap Reconnect to sync.', 'warning');
+      } else {
+        addToast('Two-way sync encountered an issue.', 'warning');
+      }
     } finally {
       setSyncing(false);
     }
@@ -708,12 +828,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         spreadsheetId,
         isOnline,
         syncing,
+        lastSyncTime,
+        isAuthExpired,
         rpg,
         toasts,
         addToast,
         removeToast,
         login,
         logout,
+        reconnectGoogle,
+        manuallySetSpreadsheetId,
         addExpense,
         addWorkSession,
         deleteExpense,

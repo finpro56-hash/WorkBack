@@ -13,7 +13,18 @@ provider.addScope('https://www.googleapis.com/auth/drive.file');
 
 // In-memory access token storage initialized from localStorage for seamless persistence
 let cachedAccessToken: string | null = localStorage.getItem('wb_access_token');
-let isSigningIn = false;
+
+export const isTokenExpired = (): boolean => {
+  const token = localStorage.getItem('wb_access_token');
+  const timestampStr = localStorage.getItem('wb_token_timestamp');
+  if (!token) return true;
+  if (!timestampStr) return false; // If not recorded, assume present
+
+  const timestamp = parseInt(timestampStr, 10);
+  // Google OAuth tokens expire in 60 minutes. Flag as expired after 55 minutes.
+  const isExpired = Date.now() - timestamp > 55 * 60 * 1000;
+  return isExpired;
+};
 
 /**
  * Initialize Auth state listener.
@@ -31,9 +42,6 @@ export const initAuth = (
     if (user && cachedAccessToken) {
       if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
     } else {
-      // Clear session on auth failure or explicit logout
-      cachedAccessToken = null;
-      localStorage.removeItem('wb_access_token');
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -44,7 +52,6 @@ export const initAuth = (
  */
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   try {
-    isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
@@ -53,12 +60,11 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 
     cachedAccessToken = credential.accessToken;
     localStorage.setItem('wb_access_token', credential.accessToken);
+    localStorage.setItem('wb_token_timestamp', Date.now().toString());
     return { user: result.user, accessToken: credential.accessToken };
   } catch (error: any) {
     console.error('Google Sign-In Error:', error);
     throw error;
-  } finally {
-    isSigningIn = false;
   }
 };
 
@@ -79,8 +85,10 @@ export const setCachedAccessToken = (token: string | null) => {
   cachedAccessToken = token;
   if (token) {
     localStorage.setItem('wb_access_token', token);
+    localStorage.setItem('wb_token_timestamp', Date.now().toString());
   } else {
     localStorage.removeItem('wb_access_token');
+    localStorage.removeItem('wb_token_timestamp');
   }
 };
 
@@ -91,4 +99,5 @@ export const logout = async () => {
   await auth.signOut();
   cachedAccessToken = null;
   localStorage.removeItem('wb_access_token');
+  localStorage.removeItem('wb_token_timestamp');
 };
